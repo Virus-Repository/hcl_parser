@@ -1,1 +1,232 @@
+@ hcl_parser - HashiCorp Configuration Language (HCL v2) parser
+@ Implementacja w HackerScript
+@ Zakres: blocks, attributes, expressions (string, number, bool)
+
+@ === Tokeny HCL ===
+func hcl_tok_ident() -> int [ return 0 ]
+func hcl_tok_string() -> int [ return 1 ]
+func hcl_tok_number() -> int [ return 2 ]
+func hcl_tok_bool() -> int [ return 3 ]
+func hcl_tok_lbrace() -> int [ return 4 ]
+func hcl_tok_rbrace() -> int [ return 5 ]
+func hcl_tok_equal() -> int [ return 6 ]
+func hcl_tok_eof() -> int [ return 7 ]
+func hcl_tok_error() -> int [ return 8 ]
+
+class HclToken [
+    tag: int,
+    text: string,
+]
+
+@ === AST ===
+class HclExpr [
+    tag: int,
+    sval: string,
+    nval: string,
+    bval: int,
+]
+
+func hcl_expr_string() -> int [ return 0 ]
+func hcl_expr_number() -> int [ return 1 ]
+func hcl_expr_bool() -> int [ return 2 ]
+
+class HclAttribute [
+    key: string,
+    value: HclExpr*,
+]
+
+class HclBlock [
+    name: string,
+    labels: string*,
+    labels_len: int,
+    attrs: HclAttribute*,
+    attrs_len: int,
+    blocks: HclBlock*,
+    blocks_len: int,
+]
+
+class HclFile [
+    blocks: HclBlock*,
+    blocks_len: int,
+]
+
+@ === Lexer ===
+class HclLexer [
+    input: string,
+    pos: int,
+]
+
+func hcl_lexer_new(input: string) -> HclLexer* [
+    l = alloc(sizeof(HclLexer))
+    l->input = strdup(input)
+    l->pos = 0
+    return l
+]
+
+func hcl_lexer_skip_ws(l: HclLexer*) -> void [
+    while true [
+        c = l->input[l->pos]
+        if c == ' ' or c == '\n' or c == '\t' or c == '\r' [
+            l->pos += 1
+        ] else [ break ]
+    ]
+]
+
+func hcl_lexer_next(l: HclLexer*) -> HclToken* [
+    hcl_lexer_skip_ws(l)
+    c = l->input[l->pos]
+    if c == 0 [
+        t = alloc(sizeof(HclToken))
+        t->tag = hcl_tok_eof()
+        t->text = ""
+        return t
+    ]
+    if isalpha(c) or c == '_' [
+        start = l->pos
+        while isalnum(l->input[l->pos]) or l->input[l->pos] == '_' [
+            l->pos += 1
+        ]
+        txt = strndup(l->input + start, l->pos - start)
+        t = alloc(sizeof(HclToken))
+        if strcmp(txt, "true") == 0 or strcmp(txt, "false") == 0 [
+            t->tag = hcl_tok_bool()
+        ] else [
+            t->tag = hcl_tok_ident()
+        ]
+        t->text = txt
+        return t
+    ]
+    if isdigit(c) [
+        start = l->pos
+        while isdigit(l->input[l->pos]) [ l->pos += 1 ]
+        txt = strndup(l->input + start, l->pos - start)
+        t = alloc(sizeof(HclToken))
+        t->tag = hcl_tok_number()
+        t->text = txt
+        return t
+    ]
+    if c == '"' [
+        l->pos += 1
+        start = l->pos
+        while l->input[l->pos] != '"' and l->input[l->pos] != 0 [
+            l->pos += 1
+        ]
+        txt = strndup(l->input + start, l->pos - start)
+        if l->input[l->pos] == '"' [ l->pos += 1 ]
+        t = alloc(sizeof(HclToken))
+        t->tag = hcl_tok_string()
+        t->text = txt
+        return t
+    ]
+    if c == '{' [ l->pos += 1; t = alloc(sizeof(HclToken)); t->tag = hcl_tok_lbrace(); t->text = "{"; return t ]
+    if c == '}' [ l->pos += 1; t = alloc(sizeof(HclToken)); t->tag = hcl_tok_rbrace(); t->text = "}"; return t ]
+    if c == '=' [ l->pos += 1; t = alloc(sizeof(HclToken)); t->tag = hcl_tok_equal(); t->text = "="; return t ]
+
+    l->pos += 1
+    t = alloc(sizeof(HclToken))
+    t->tag = hcl_tok_error()
+    t->text = ""
+    return t
+]
+
+@ === Parser ===
+class HclParser [
+    lexer: HclLexer*,
+    current: HclToken*,
+]
+
+func hcl_parser_new(input: string) -> HclParser* [
+    p = alloc(sizeof(HclParser))
+    p->lexer = hcl_lexer_new(input)
+    p->current = hcl_lexer_next(p->lexer)
+    return p
+]
+
+func hcl_advance(p: HclParser*) -> void [
+    p->current = hcl_lexer_next(p->lexer)
+]
+
+func hcl_parse_expr(p: HclParser*) -> HclExpr* [
+    e = alloc(sizeof(HclExpr))
+    if p->current->tag == hcl_tok_string() [
+        e->tag = hcl_expr_string()
+        e->sval = strdup(p->current->text)
+        hcl_advance(p)
+        return e
+    ]
+    if p->current->tag == hcl_tok_number() [
+        e->tag = hcl_expr_number()
+        e->nval = strdup(p->current->text)
+        hcl_advance(p)
+        return e
+    ]
+    if p->current->tag == hcl_tok_bool() [
+        e->tag = hcl_expr_bool()
+        e->bval = if strcmp(p->current->text, "true") == 0 then 1 else 0
+        hcl_advance(p)
+        return e
+    ]
+    return null
+]
+
+func hcl_parse_attribute(p: HclParser*) -> HclAttribute* [
+    a = alloc(sizeof(HclAttribute))
+    a->key = strdup(p->current->text)
+    hcl_advance(p)
+    if p->current->tag != hcl_tok_equal() [ return null ]
+    hcl_advance(p)
+    a->value = hcl_parse_expr(p)
+    return a
+]
+
+func hcl_parse_block(p: HclParser*) -> HclBlock* [
+    b = alloc(sizeof(HclBlock))
+    b->name = strdup(p->current->text)
+    hcl_advance(p)
+    b->labels_len = 0
+    b->attrs_len = 0
+    b->blocks_len = 0
+    if p->current->tag != hcl_tok_lbrace() [ return null ]
+    hcl_advance(p)
+    while p->current->tag != hcl_tok_rbrace() and p->current->tag != hcl_tok_eof() [
+        if p->current->tag == hcl_tok_ident() [
+            next = hcl_lexer_next(p->lexer)
+            p->lexer->pos -= strlen(next->text)
+            if next->tag == hcl_tok_equal() [
+                attr = hcl_parse_attribute(p)
+                b->attrs[b->attrs_len] = *attr
+                b->attrs_len += 1
+            ] else [
+                blk = hcl_parse_block(p)
+                b->blocks[b->blocks_len] = *blk
+                b->blocks_len += 1
+            ]
+        ] else [
+            hcl_advance(p)
+        ]
+    ]
+    if p->current->tag == hcl_tok_rbrace() [ hcl_advance(p) ]
+    return b
+]
+
+func hcl_parse_file(input: string) -> HclFile* [
+    p = hcl_parser_new(input)
+    f = alloc(sizeof(HclFile))
+    f->blocks_len = 0
+    while p->current->tag != hcl_tok_eof() [
+        if p->current->tag == hcl_tok_ident() [
+            blk = hcl_parse_block(p)
+            f->blocks[f->blocks_len] = *blk
+            f->blocks_len += 1
+        ] else [
+            hcl_advance(p)
+        ]
+    ]
+    return f
+]
+
+@ === Public API ===
+func hcl_parse(input: string) -> HclFile* [
+    return hcl_parse_file(input)
+]
 
